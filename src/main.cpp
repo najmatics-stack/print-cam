@@ -758,7 +758,8 @@ void startWebServer() {
     // Configure the HTTP server
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 10;  // We register 8 handlers (leave some room)
-    config.stack_size = 8192;      // Stack size per handler thread (bytes)
+    config.stack_size = 12288;     // Stack size per handler thread (bytes)
+    config.max_open_sockets = 3;   // Limit concurrent connections to prevent overload
 
     // Allow the server to purge the oldest connection when all
     // slots are full. This is important because the /stream handler

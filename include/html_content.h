@@ -100,220 +100,42 @@ const char WIFI_SETUP_HTML[] = R"rawliteral(
 // The JavaScript at the bottom polls /timelapse/status every
 // 2 seconds to keep the dashboard updated in real time.
 const char DASHBOARD_HTML[] = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>PrinterCam</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #1a1a2e; color: #e0e0e0; padding: 16px;
-        }
-        .container { max-width: 800px; margin: 0 auto; }
-        h1 { color: #00d4ff; margin-bottom: 16px; font-size: 22px; }
-
-        /* Live video stream container */
-        .stream-box {
-            background: #000; border-radius: 12px;
-            overflow: hidden; margin-bottom: 16px; text-align: center;
-        }
-        .stream-box img {
-            width: 100%; max-width: 640px;
-            display: block; margin: 0 auto;
-        }
-
-        /* Card containers for sections */
-        .card {
-            background: #16213e; border-radius: 12px;
-            padding: 16px; margin-bottom: 12px;
-        }
-        .card h2 {
-            font-size: 16px; color: #00d4ff; margin-bottom: 12px;
-        }
-
-        /* Status grid - 2x2 grid of stats */
-        .status-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-        }
-        .stat {
-            background: #0f3460; border-radius: 8px; padding: 10px;
-        }
-        .stat-label {
-            font-size: 11px; color: #888; text-transform: uppercase;
-        }
-        .stat-value {
-            font-size: 18px; font-weight: bold; margin-top: 2px;
-        }
-        .running { color: #4ade80; }
-        .stopped { color: #f87171; }
-
-        /* Control buttons and inputs */
-        .controls {
-            display: flex; gap: 8px;
-            align-items: center; flex-wrap: wrap;
-        }
-        .btn {
-            padding: 10px 20px; border: none; border-radius: 8px;
-            font-size: 14px; font-weight: bold; cursor: pointer;
-        }
-        .btn-start { background: #4ade80; color: #1a1a2e; }
-        .btn-stop  { background: #f87171; color: #1a1a2e; }
-        .btn-wifi  { background: #f59e0b; color: #1a1a2e; }
-        .btn:hover { opacity: 0.85; }
-        .btn:active { transform: scale(0.97); }
-        input[type="number"] {
-            width: 80px; padding: 10px;
-            border: 1px solid #333; border-radius: 8px;
-            background: #0f3460; color: #fff; font-size: 14px;
-        }
-        .interval-label { font-size: 13px; color: #888; }
-
-        /* Footer area */
-        .footer { text-align: center; margin-top: 16px; }
-        .footer p { margin-top: 8px; font-size: 12px; color: #666; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>PrinterCam</h1>
-
-        <!-- Camera View -->
-        <div class="stream-box">
-            <img id="stream" src="/capture" alt="Camera View" />
-        </div>
-        <div class="card" style="padding:10px;text-align:center;">
-            <button class="btn" id="mode-btn" style="background:#6366f1;color:#fff;" onclick="toggleMode()">Switch to Live Stream</button>
-        </div>
-
-        <!-- Status Cards -->
-        <div class="card">
-            <h2>Status</h2>
-            <div class="status-grid">
-                <div class="stat">
-                    <div class="stat-label">Timelapse</div>
-                    <div class="stat-value" id="tl-status">--</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-label">Photos Taken</div>
-                    <div class="stat-value" id="tl-count">--</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-label">WiFi Signal</div>
-                    <div class="stat-value" id="rssi">--</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-label">SD Card Free</div>
-                    <div class="stat-value" id="sd-free">--</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Timelapse Controls -->
-        <div class="card">
-            <h2>Timelapse Controls</h2>
-            <div class="controls">
-                <button class="btn btn-start" onclick="startTL()">Start</button>
-                <button class="btn btn-stop" onclick="stopTL()">Stop</button>
-                <input type="number" id="interval" value="30" min="5" max="3600" />
-                <span class="interval-label">sec interval</span>
-            </div>
-        </div>
-
-        <!-- WiFi Settings -->
-        <div class="card footer">
-            <button class="btn btn-wifi" onclick="resetWiFi()">
-                Reset WiFi Settings
-            </button>
-            <p id="wifi-msg"></p>
-        </div>
-    </div>
-
-    <script>
-        // -------------------------------------------------------
-        // Dashboard JavaScript
-        // -------------------------------------------------------
-        // This code runs in the browser and communicates with the
-        // ESP32 by making HTTP requests (fetch) to the API endpoints.
-
-        // Poll the /timelapse/status endpoint every 2 seconds
-        // to keep the dashboard info up to date
-        function updateStatus() {
-            fetch('/timelapse/status')
-                .then(function(response) { return response.json(); })
-                .then(function(data) {
-                    // Update timelapse status with color coding
-                    var statusEl = document.getElementById('tl-status');
-                    statusEl.textContent = data.running ? 'Running' : 'Stopped';
-                    statusEl.className = 'stat-value ' + (data.running ? 'running' : 'stopped');
-
-                    // Update other stats
-                    document.getElementById('tl-count').textContent = data.count;
-                    document.getElementById('rssi').textContent = data.rssi + ' dBm';
-                    document.getElementById('sd-free').textContent = data.sd_free_mb + ' MB';
-                })
-                .catch(function() {
-                    // Silently ignore errors (camera may be rebooting)
-                });
-        }
-
-        // Start timelapse with the interval from the input field
-        function startTL() {
-            var interval = document.getElementById('interval').value;
-            fetch('/timelapse/start?interval=' + interval)
-                .then(function() { setTimeout(updateStatus, 300); });
-        }
-
-        // Stop timelapse
-        function stopTL() {
-            fetch('/timelapse/stop')
-                .then(function() { setTimeout(updateStatus, 300); });
-        }
-
-        // Reset WiFi credentials and reboot into AP mode
-        function resetWiFi() {
-            if (confirm('Reset WiFi settings and reboot into setup mode?')) {
-                fetch('/wifi-reset').then(function() {
-                    document.getElementById('wifi-msg').textContent = 'Rebooting into setup mode...';
-                });
-            }
-        }
-
-        // Snapshot vs stream mode
-        var liveMode = false;
-        var snapTimer = null;
-
-        function refreshSnapshot() {
-            var img = document.getElementById('stream');
-            img.src = '/capture?t=' + Date.now();
-        }
-
-        function toggleMode() {
-            var img = document.getElementById('stream');
-            var btn = document.getElementById('mode-btn');
-            liveMode = !liveMode;
-            if (liveMode) {
-                if (snapTimer) { clearInterval(snapTimer); snapTimer = null; }
-                img.src = '/stream';
-                btn.textContent = 'Switch to Snapshot';
-            } else {
-                img.src = '/capture?t=' + Date.now();
-                snapTimer = setInterval(refreshSnapshot, 2000);
-                btn.textContent = 'Switch to Live Stream';
-            }
-        }
-
-        // Start in snapshot mode - refresh every 2 seconds
-        snapTimer = setInterval(refreshSnapshot, 2000);
-
-        // Run immediately on page load, then every 2 seconds
-        updateStatus();
-        setInterval(updateStatus, 2000);
-    </script>
-</body>
-</html>
+<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PrinterCam</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;padding:16px}.c{max-width:800px;margin:0 auto}h1{color:#00d4ff;margin-bottom:16px;font-size:22px}.sb{background:#000;border-radius:12px;overflow:hidden;margin-bottom:16px;text-align:center;min-height:120px}.sb img{width:100%;max-width:640px;display:block;margin:0 auto}.cd{background:#16213e;border-radius:12px;padding:16px;margin-bottom:12px}.cd h2{font-size:16px;color:#00d4ff;margin-bottom:12px}.sg{display:grid;grid-template-columns:1fr 1fr;gap:8px}.st{background:#0f3460;border-radius:8px;padding:10px}.sl{font-size:11px;color:#888;text-transform:uppercase}.sv{font-size:18px;font-weight:bold;margin-top:2px}.gr{color:#4ade80}.rd{color:#f87171}.ct{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.b{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer}input[type=number]{width:80px;padding:10px;border:1px solid #333;border-radius:8px;background:#0f3460;color:#fff;font-size:14px}.il{font-size:13px;color:#888}.ld{color:#888;padding:40px;font-size:14px}</style>
+</head><body><div class="c"><h1>PrinterCam</h1>
+<div class="sb"><div class="ld" id="ph">Loading camera...</div><img id="stream" alt="Camera" style="display:none"></div>
+<div class="cd" style="padding:10px;text-align:center"><div class="ct" style="justify-content:center">
+<button class="b" style="background:#6366f1;color:#fff" onclick="snap()">Refresh</button>
+<button class="b" id="ab" style="background:#333;color:#fff" onclick="toggleA()">Auto: Off</button>
+<button class="b" id="mb" style="background:#333;color:#fff" onclick="toggleM()">Live Stream</button>
+</div></div>
+<div class="cd"><h2>Status</h2><div class="sg">
+<div class="st"><div class="sl">Timelapse</div><div class="sv" id="ts">--</div></div>
+<div class="st"><div class="sl">Photos</div><div class="sv" id="tc">--</div></div>
+<div class="st"><div class="sl">WiFi Signal</div><div class="sv" id="rs">--</div></div>
+<div class="st"><div class="sl">SD Free</div><div class="sv" id="sf">--</div></div>
+</div></div>
+<div class="cd"><h2>Timelapse</h2><div class="ct">
+<button class="b" style="background:#4ade80;color:#1a1a2e" onclick="startTL()">Start</button>
+<button class="b" style="background:#f87171;color:#1a1a2e" onclick="stopTL()">Stop</button>
+<input type="number" id="iv" value="30" min="5" max="3600"><span class="il">sec</span>
+</div></div>
+<div class="cd" style="text-align:center;margin-top:16px">
+<button class="b" style="background:#f59e0b;color:#1a1a2e" onclick="resetW()">Reset WiFi</button>
+<p id="wm" style="margin-top:8px;font-size:12px;color:#666"></p>
+</div></div>
+<script>
+var img=document.getElementById('stream'),ph=document.getElementById('ph'),st=null,am=false,lm=false;
+function show(){ph.style.display='none';img.style.display='block'}
+function snap(){img.onload=show;img.src='/capture?t='+Date.now()}
+function us(){fetch('/timelapse/status').then(function(r){return r.json()}).then(function(d){var e=document.getElementById('ts');e.textContent=d.running?'Running':'Stopped';e.className='sv '+(d.running?'gr':'rd');document.getElementById('tc').textContent=d.count;document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('sf').textContent=d.sd_free_mb+' MB'}).catch(function(){})}
+function startTL(){fetch('/timelapse/start?interval='+document.getElementById('iv').value).then(function(){setTimeout(us,500)})}
+function stopTL(){fetch('/timelapse/stop').then(function(){setTimeout(us,500)})}
+function resetW(){if(confirm('Reset WiFi and reboot?'))fetch('/wifi-reset').then(function(){document.getElementById('wm').textContent='Rebooting...'})}
+function toggleA(){am=!am;var b=document.getElementById('ab');if(lm)toggleM();if(am){st=setInterval(snap,5000);b.textContent='Auto: On';b.style.background='#4ade80';b.style.color='#1a1a2e'}else{if(st){clearInterval(st);st=null}b.textContent='Auto: Off';b.style.background='#333';b.style.color='#fff'}}
+function toggleM(){var b=document.getElementById('mb');lm=!lm;if(lm){if(st){clearInterval(st);st=null}am=false;var a=document.getElementById('ab');a.textContent='Auto: Off';a.style.background='#333';a.style.color='#fff';img.onload=show;img.src='/stream';b.textContent='Stop Stream';b.style.background='#f87171'}else{snap();b.textContent='Live Stream';b.style.background='#333';b.style.color='#fff'}}
+snap();setTimeout(us,2000);setInterval(us,10000);
+</script></body></html>
 )rawliteral";
 
 
