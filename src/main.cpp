@@ -45,6 +45,8 @@
 // handle multiple connections at once - critical for streaming
 // video to one client while another checks the dashboard.
 #include "esp_http_server.h"
+#include <sys/socket.h>
+#include <netinet/tcp.h>
 
 // --- WiFi ---
 // Lets us connect to WiFi networks (Station/STA mode) or
@@ -123,8 +125,9 @@ const int CAPTURE_JPEG_QUALITY = 10;   // Used for saved timelapse photos (sligh
 // --- WiFi State ---
 bool apMode = false;             // true = AP mode (setup), false = connected to WiFi
 
-// --- Server ---
-httpd_handle_t httpServer = NULL; // Handle to the HTTP server instance
+// --- Servers ---
+httpd_handle_t httpServer = NULL;   // Dashboard + API on port 80
+httpd_handle_t streamServer = NULL; // Dedicated stream server on port 81
 
 // --- DNS Server (captive portal) ---
 DNSServer dnsServer;             // Only active in AP mode
@@ -603,59 +606,79 @@ static esp_err_t wifi_reset_handler(httpd_req_t *req) {
 static esp_err_t stream_handler(httpd_req_t *req) {
     esp_err_t res = ESP_OK;
     camera_fb_t *fb = NULL;
+    int failCount = 0;
 
-    // These strings define the MJPEG multipart protocol
     static const char *STREAM_CONTENT_TYPE =
         "multipart/x-mixed-replace;boundary=frame";
     static const char *STREAM_BOUNDARY = "\r\n--frame\r\n";
     static const char *STREAM_PART =
         "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-    // Set the response content type for multipart streaming
     res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     if (res != ESP_OK) return res;
 
-    // Allow cross-origin requests (so the stream works even if
-    // accessed from a different port or domain)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    // Disable Nagle's algorithm for lower latency
+    int sockfd = httpd_req_to_sockfd(req);
+    if (sockfd >= 0) {
+        int yes = 1;
+        setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+        // Set a send timeout so we don't block forever on slow clients
+        struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+        setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    }
 
     Serial.println("Stream: Client connected");
 
-    // Continuously capture and send frames
     while (true) {
-        // Grab a frame from the camera
         fb = esp_camera_fb_get();
         if (!fb) {
-            Serial.println("Stream: Camera capture failed!");
-            res = ESP_FAIL;
-            break;
+            failCount++;
+            Serial.printf("Stream: Capture failed (%d)\n", failCount);
+            if (failCount > 5) {
+                Serial.println("Stream: Too many failures, stopping");
+                res = ESP_FAIL;
+                break;
+            }
+            delay(100);
+            continue;
         }
+        failCount = 0;
 
-        // Build the header for this frame (content type + size)
         char partHeader[64];
         size_t headerLen = snprintf(partHeader, sizeof(partHeader),
                                     STREAM_PART, fb->len);
 
-        // Send the boundary separator (marks start of new frame)
-        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY,
-                                    strlen(STREAM_BOUNDARY));
-        if (res != ESP_OK) break;
-
-        // Send the frame header
-        res = httpd_resp_send_chunk(req, partHeader, headerLen);
-        if (res != ESP_OK) break;
-
-        // Send the actual JPEG image data
-        res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
-        if (res != ESP_OK) break;
-
-        // Return the frame buffer to the camera driver
-        // (so it can be reused for the next capture)
+        // Return the frame buffer BEFORE sending to minimize hold time.
+        // Copy the data to a temporary buffer first.
+        size_t jpegLen = fb->len;
+        uint8_t *jpegBuf = (uint8_t *)ps_malloc(jpegLen);
+        if (!jpegBuf) {
+            // Fallback: send directly (holds buffer longer)
+            esp_camera_fb_return(fb);
+            fb = NULL;
+            continue;
+        }
+        memcpy(jpegBuf, fb->buf, jpegLen);
         esp_camera_fb_return(fb);
         fb = NULL;
+
+        // Now send without holding the camera buffer
+        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY,
+                                    strlen(STREAM_BOUNDARY));
+        if (res == ESP_OK)
+            res = httpd_resp_send_chunk(req, partHeader, headerLen);
+        if (res == ESP_OK)
+            res = httpd_resp_send_chunk(req, (const char *)jpegBuf, jpegLen);
+
+        free(jpegBuf);
+
+        if (res != ESP_OK) break;
+
+        // Yield to other tasks (WiFi stack, watchdog)
+        delay(1);
     }
 
-    // If we exited the loop while holding a frame buffer, return it
     if (fb) {
         esp_camera_fb_return(fb);
     }
@@ -749,97 +772,92 @@ static esp_err_t timelapse_status_handler(httpd_req_t *req) {
 }
 
 
+// ----- GET /resolution?set=cif|vga|svga -----
+// Change camera resolution on the fly for speed vs quality tradeoff.
+static esp_err_t resolution_handler(httpd_req_t *req) {
+    char query[32] = {0};
+    char value[8] = {0};
+    framesize_t newSize = FRAMESIZE_VGA;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "set", value, sizeof(value)) == ESP_OK) {
+        if (strcmp(value, "cif") == 0)       newSize = FRAMESIZE_CIF;    // 400x296
+        else if (strcmp(value, "qvga") == 0) newSize = FRAMESIZE_QVGA;   // 320x240
+        else if (strcmp(value, "vga") == 0)  newSize = FRAMESIZE_VGA;    // 640x480
+        else if (strcmp(value, "svga") == 0) newSize = FRAMESIZE_SVGA;   // 800x600
+    }
+
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor) {
+        sensor->set_framesize(sensor, newSize);
+        Serial.printf("Resolution changed to: %s\n", value);
+    }
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 // =============================================================
 // SECTION 9: WEB SERVER SETUP
 // =============================================================
 
-// Register all URL endpoints and start the HTTP server.
+// Register all URL endpoints and start the HTTP servers.
+// Port 80: Dashboard, API, snapshots
+// Port 81: Dedicated MJPEG stream (separate server so streaming
+//           never blocks dashboard or API requests)
 void startWebServer() {
-    // Configure the HTTP server
+    // --- Server 1: Dashboard + API on port 80 ---
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;  // We register 8 handlers (leave some room)
-    config.stack_size = 12288;     // Stack size per handler thread (bytes)
-    config.max_open_sockets = 3;   // Limit concurrent connections to prevent overload
-
-    // Allow the server to purge the oldest connection when all
-    // slots are full. This is important because the /stream handler
-    // holds a connection open indefinitely.
+    config.max_uri_handlers = 10;
+    config.stack_size = 12288;
+    config.max_open_sockets = 4;
     config.lru_purge_enable = true;
 
-    Serial.println("Starting web server on port 80...");
-
+    Serial.println("Starting dashboard server on port 80...");
     if (httpd_start(&httpServer, &config) != ESP_OK) {
-        Serial.println("ERROR: Failed to start web server!");
+        Serial.println("ERROR: Failed to start dashboard server!");
         return;
     }
 
-    // --- Register all URL handlers ---
-    // Each handler maps a URL path + HTTP method to a function.
-    // When a browser requests that URL, the corresponding function runs.
+    httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
+    httpd_uri_t save_wifi_uri = { .uri = "/save-wifi", .method = HTTP_POST, .handler = save_wifi_handler, .user_ctx = NULL };
+    httpd_uri_t wifi_reset_uri = { .uri = "/wifi-reset", .method = HTTP_GET, .handler = wifi_reset_handler, .user_ctx = NULL };
+    httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL };
+    httpd_uri_t tl_start_uri = { .uri = "/timelapse/start", .method = HTTP_GET, .handler = timelapse_start_handler, .user_ctx = NULL };
+    httpd_uri_t tl_stop_uri = { .uri = "/timelapse/stop", .method = HTTP_GET, .handler = timelapse_stop_handler, .user_ctx = NULL };
+    httpd_uri_t tl_status_uri = { .uri = "/timelapse/status", .method = HTTP_GET, .handler = timelapse_status_handler, .user_ctx = NULL };
+    httpd_uri_t res_uri = { .uri = "/resolution", .method = HTTP_GET, .handler = resolution_handler, .user_ctx = NULL };
 
-    // Dashboard / WiFi setup page
-    httpd_uri_t index_uri = {
-        .uri = "/", .method = HTTP_GET,
-        .handler = index_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &index_uri);
-
-    // Save WiFi credentials (form submission)
-    httpd_uri_t save_wifi_uri = {
-        .uri = "/save-wifi", .method = HTTP_POST,
-        .handler = save_wifi_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &save_wifi_uri);
-
-    // WiFi reset
-    httpd_uri_t wifi_reset_uri = {
-        .uri = "/wifi-reset", .method = HTTP_GET,
-        .handler = wifi_reset_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &wifi_reset_uri);
-
-    // Live MJPEG video stream
-    httpd_uri_t stream_uri = {
-        .uri = "/stream", .method = HTTP_GET,
-        .handler = stream_handler, .user_ctx = NULL
-    };
-    httpd_register_uri_handler(httpServer, &stream_uri);
-
-    // Single JPEG snapshot
-    httpd_uri_t capture_uri = {
-        .uri = "/capture", .method = HTTP_GET,
-        .handler = capture_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &capture_uri);
-
-    // Timelapse start
-    httpd_uri_t tl_start_uri = {
-        .uri = "/timelapse/start", .method = HTTP_GET,
-        .handler = timelapse_start_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &tl_start_uri);
-
-    // Timelapse stop
-    httpd_uri_t tl_stop_uri = {
-        .uri = "/timelapse/stop", .method = HTTP_GET,
-        .handler = timelapse_stop_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &tl_stop_uri);
-
-    // Timelapse status (JSON)
-    httpd_uri_t tl_status_uri = {
-        .uri = "/timelapse/status", .method = HTTP_GET,
-        .handler = timelapse_status_handler, .user_ctx = NULL
-    };
     httpd_register_uri_handler(httpServer, &tl_status_uri);
+    httpd_register_uri_handler(httpServer, &res_uri);
 
-    Serial.println("Web server started! Available endpoints:");
-    Serial.println("  GET  /                  Dashboard");
-    Serial.println("  GET  /stream            Live video (MJPEG)");
-    Serial.println("  GET  /capture           Single JPEG snapshot");
-    Serial.println("  GET  /timelapse/start   Start timelapse (?interval=N)");
-    Serial.println("  GET  /timelapse/stop    Stop timelapse");
-    Serial.println("  GET  /timelapse/status  JSON status");
+    // --- Server 2: Dedicated stream on port 81 ---
+    httpd_config_t streamConfig = HTTPD_DEFAULT_CONFIG();
+    streamConfig.server_port = 81;
+    streamConfig.ctrl_port = 32769;
+    streamConfig.max_uri_handlers = 2;
+    streamConfig.stack_size = 12288;
+    streamConfig.max_open_sockets = 2;
+    streamConfig.lru_purge_enable = true;
+
+    Serial.println("Starting stream server on port 81...");
+    if (httpd_start(&streamServer, &streamConfig) != ESP_OK) {
+        Serial.println("ERROR: Failed to start stream server!");
+    } else {
+        httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL };
+        httpd_register_uri_handler(streamServer, &stream_uri);
+    }
+
+    Serial.println("Servers started! Endpoints:");
+    Serial.println("  Port 80: /  /capture  /timelapse/*  /resolution?set=cif|vga|svga");
+    Serial.println("  Port 81: /stream");
 }
 
 

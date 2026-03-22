@@ -108,6 +108,13 @@ const char DASHBOARD_HTML[] = R"rawliteral(
 <button class="b" style="background:#6366f1;color:#fff" onclick="snap()">Refresh</button>
 <button class="b" id="ab" style="background:#333;color:#fff" onclick="toggleA()">Auto: Off</button>
 <button class="b" id="mb" style="background:#333;color:#fff" onclick="toggleM()">Live Stream</button>
+</div>
+<div class="ct" style="justify-content:center;margin-top:8px">
+<span class="il">Quality:</span>
+<button class="b rb" style="background:#333;color:#fff;padding:8px 14px;font-size:12px" onclick="setRes('qvga',this)">Fast</button>
+<button class="b rb" style="background:#333;color:#fff;padding:8px 14px;font-size:12px" onclick="setRes('cif',this)">Medium</button>
+<button class="b rb" style="background:#00d4ff;color:#1a1a2e;padding:8px 14px;font-size:12px" onclick="setRes('vga',this)">High</button>
+<button class="b rb" style="background:#333;color:#fff;padding:8px 14px;font-size:12px" onclick="setRes('svga',this)">Best</button>
 </div></div>
 <div class="cd"><h2>Status</h2><div class="sg">
 <div class="st"><div class="sl">Timelapse</div><div class="sv" id="ts">--</div></div>
@@ -126,14 +133,17 @@ const char DASHBOARD_HTML[] = R"rawliteral(
 </div></div>
 <script>
 var img=document.getElementById('stream'),ph=document.getElementById('ph'),st=null,am=false,lm=false;
+var sp=location.port?':81':'://'+location.hostname+':81';
+var su=location.protocol+'//'+location.hostname+':81/stream';
 function show(){ph.style.display='none';img.style.display='block'}
 function snap(){img.onload=show;img.src='/capture?t='+Date.now()}
 function us(){fetch('/timelapse/status').then(function(r){return r.json()}).then(function(d){var e=document.getElementById('ts');e.textContent=d.running?'Running':'Stopped';e.className='sv '+(d.running?'gr':'rd');document.getElementById('tc').textContent=d.count;document.getElementById('rs').textContent=d.rssi+' dBm';document.getElementById('sf').textContent=d.sd_free_mb+' MB'}).catch(function(){})}
 function startTL(){fetch('/timelapse/start?interval='+document.getElementById('iv').value).then(function(){setTimeout(us,500)})}
 function stopTL(){fetch('/timelapse/stop').then(function(){setTimeout(us,500)})}
 function resetW(){if(confirm('Reset WiFi and reboot?'))fetch('/wifi-reset').then(function(){document.getElementById('wm').textContent='Rebooting...'})}
+function setRes(r,el){fetch('/resolution?set='+r).then(function(){var bs=document.querySelectorAll('.rb');for(var i=0;i<bs.length;i++){bs[i].style.background='#333';bs[i].style.color='#fff'}el.style.background='#00d4ff';el.style.color='#1a1a2e';if(!lm)setTimeout(snap,300)})}
 function toggleA(){am=!am;var b=document.getElementById('ab');if(lm)toggleM();if(am){st=setInterval(snap,5000);b.textContent='Auto: On';b.style.background='#4ade80';b.style.color='#1a1a2e'}else{if(st){clearInterval(st);st=null}b.textContent='Auto: Off';b.style.background='#333';b.style.color='#fff'}}
-function toggleM(){var b=document.getElementById('mb');lm=!lm;if(lm){if(st){clearInterval(st);st=null}am=false;var a=document.getElementById('ab');a.textContent='Auto: Off';a.style.background='#333';a.style.color='#fff';img.onload=show;img.src='/stream';b.textContent='Stop Stream';b.style.background='#f87171'}else{snap();b.textContent='Live Stream';b.style.background='#333';b.style.color='#fff'}}
+function toggleM(){var b=document.getElementById('mb');lm=!lm;if(lm){if(st){clearInterval(st);st=null}am=false;var a=document.getElementById('ab');a.textContent='Auto: Off';a.style.background='#333';a.style.color='#fff';img.onload=show;img.src=su;b.textContent='Stop Stream';b.style.background='#f87171'}else{snap();b.textContent='Live Stream';b.style.background='#333';b.style.color='#fff'}}
 snap();setTimeout(us,2000);setInterval(us,10000);
 </script></body></html>
 )rawliteral";
