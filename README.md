@@ -19,6 +19,20 @@ ESP32-CAM based 3D printer camera. Live MJPEG stream, timelapse capture to micro
 
 See [BOM.md](BOM.md) for the full bill of materials.
 
+## Software Prerequisites
+
+Install the following before getting started:
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **VS Code** | Code editor / PlatformIO host | [Download](https://code.visualstudio.com/) |
+| **PlatformIO IDE** | Build and flash ESP32 firmware | [VS Code extension](https://platformio.org/install/ide?install=vscode) |
+| **Python 3.x** | Required by PlatformIO; also used for the project virtual environment | [Download](https://www.python.org/downloads/) |
+| **ffmpeg** | Convert captured JPEGs into timelapse videos | [Download](https://ffmpeg.org/download.html) |
+| **CH340 USB driver** | USB-to-serial driver for ESP32-CAM-MB programmer (usually pre-installed on modern OSes) | [macOS](https://github.com/adrianmihalko/ch340g-ch34g-ch34x-mac-os-x-driver) / [Windows](https://www.wch-ic.com/downloads/CH341SER_EXE.html) |
+
+> **Note:** PlatformIO will automatically download the Espressif32 platform, the Arduino framework, and the correct toolchain on first build. No manual SDK installation is needed.
+
 ## Quick Start
 
 ```bash
@@ -61,4 +75,4 @@ ffmpeg -framerate 30 -i img_%05u.jpg -c:v libx264 -pix_fmt yuv420p timelapse.mp4
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
